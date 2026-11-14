@@ -1,1 +1,52 @@
+name: bea-mne-probe1
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: List BEA datasets, multinational enterprise parameters and their values
+        env:
+          BEA_API_KEY: ${{ secrets.BEA_API_KEY }}
+        run: |
+          mkdir -p out
+          cat > q.py <<'PY'
+          import os, json, time, urllib.request, urllib.parse
+          K = os.environ["BEA_API_KEY"]
+          log = open("out/log.txt", "w")
+          def L(s): log.write(s + "\n"); log.flush()
+          def call(**p):
+              p.update(UserID=K, ResultFormat="JSON")
+              url = "https://apps.bea.gov/api/data/?" + urllib.parse.urlencode(p)
+              for a in range(3):
+                  try:
+                      return json.load(urllib.request.urlopen(url, timeout=120))
+                  except Exception as e:
+                      L("  retry %d %r" % (a, str(e)[:100])); time.sleep(10)
+          d = call(method="GETDATASETLIST"); json.dump(d, open("out/datasets.json", "w"), indent=1)
+          names = [x["DatasetName"] for x in d["BEAAPI"]["Results"]["Dataset"]]; L("datasets: %s" % names)
+          for ds in [n for n in names if n in ("MNE", "IntlServTrade", "IIP", "FixedAssets")]:
+              pl = call(method="GETPARAMETERLIST", datasetname=ds); json.dump(pl, open("out/%s_params.json" % ds, "w"), indent=1)
+              try: params = [x["ParameterName"] for x in pl["BEAAPI"]["Results"]["Parameter"]]
+              except Exception: L("%s params failed" % ds); continue
+              L("%s params: %s" % (ds, params))
+              if ds != "MNE": continue
+              for pn in params:
+                  if pn.lower() in ("resultformat", "userid", "method"): continue
+                  v = call(method="GETPARAMETERVALUES", datasetname=ds, parametername=pn); json.dump(v, open("out/MNE_values_%s.json" % pn, "w"), indent=1); time.sleep(2)
+                  L("  values saved for %s" % pn)
+          # sample pulls: try a few plausible call shapes and keep whatever returns
+          samples = [dict(method="GetData", datasetname="MNE", DirectionOfInvestment="Outward", Classification="Country", Year="2022", Country="all", NonbankAffiliatesOnly="0", SeriesID="all", OwnershipLevel="1", Industry="0000")]
+          for i, s in enumerate(samples):
+              r = call(**s); json.dump(r, open("out/sample_%d.json" % i, "w"), indent=1); L("sample %d: %s" % (i, json.dumps(r)[:400]))
+          PY
+          python3 q.py || true
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bea-mne-probe1
+          path: out/
 
