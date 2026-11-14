@@ -1,1 +1,64 @@
+name: bea-mne-data1
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        direction: [outward, inward, parent]
+        span: ["1977-1990", "1991-2004", "2005-2015", "2016-2025"]
+    steps:
+      - name: Pull BEA multinational enterprise data by country, series and year
+        env:
+          BEA_API_KEY: ${{ secrets.BEA_API_KEY }}
+          DIR: ${{ matrix.direction }}
+          SPAN: ${{ matrix.span }}
+        run: |
+          mkdir -p out
+          cat > q.py <<'PY'
+          import os, json, time, urllib.request, urllib.parse
+          K = os.environ["BEA_API_KEY"]; DIR = os.environ["DIR"]
+          a, b = [int(x) for x in os.environ["SPAN"].split("-")]
+          log = open("out/log.txt", "w")
+          def L(s): log.write(s + "\n"); log.flush()
+          def call(p):
+              p = dict(p, UserID=K, ResultFormat="JSON")
+              url = "https://apps.bea.gov/api/data/?" + urllib.parse.urlencode(p)
+              for t in range(3):
+                  try:
+                      return json.load(urllib.request.urlopen(url, timeout=180))
+                  except Exception as e:
+                      L("   retry %d %r" % (t, str(e)[:80])); time.sleep(8)
+          # 4 sales, 8 employment, 7 compensation, 6 value added, 14 R&D, 1 total assets
+          SERIES = ["4", "8", "7", "6", "14", "1"]
+          out = []
+          for y in range(a, b + 1):
+              for s in SERIES:
+                  got = False
+                  for own in ("1", "0"):
+                      for nb in ("0", "1"):
+                          p = dict(method="GetData", datasetname="MNE", DirectionOfInvestment=DIR, Classification="Country", Country="all",
+                                   Year=str(y), SeriesID=s, OwnershipLevel=own, NonbankAffiliatesOnly=nb, Industry="0000")
+                          r = call(p); time.sleep(0.7)
+                          try:
+                              res = r["BEAAPI"]["Results"]; rows = res["Data"] if isinstance(res, dict) else res[0]["Data"]
+                          except Exception:
+                              err = json.dumps(r)[:160] if r else "no response"; continue
+                          if rows:
+                              out.append({"year": y, "series": s, "ownership": own, "nonbank": nb, "rows": rows}); L("%s %d s%s own%s nb%s: %d rows" % (DIR, y, s, own, nb, len(rows))); got = True; break
+                      if got: break
+                  if not got: L("%s %d s%s: no data (%s)" % (DIR, y, s, locals().get("err", "")))
+          json.dump(out, open("out/bea_%s_%d_%d.json" % (DIR, a, b), "w"))
+          PY
+          python3 q.py || true
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bea-mne-data1-${{ matrix.direction }}-${{ matrix.span }}
+          path: out/
 
